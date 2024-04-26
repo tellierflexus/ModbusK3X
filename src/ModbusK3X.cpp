@@ -15,19 +15,14 @@
 #include "ModbusK3X.h"
 
 byte _rcvBuffer[BUFFER_SIZE];
+int _nbrRcv;
 
-
-ModbusK3X::ModbusK3X(byte address, HardwareSerial& serial, int RS485Pin, int baud) : _SerialBus(serial) {
+ModbusK3X::ModbusK3X(byte address, HardwareSerial& device, int RS485Pin){
 	_address = address;
 	_RS485Pin = RS485Pin; //9999 Default value will be considered as no pin, therefore no need to activate transmission on a RS485 transceiver like MAX485
-	serial.begin(baud, SERIAL_8N1);
-	_SerialBus = serial;
-	_baud = baud;
-	_T1_5 = 15000000/baud; 
-	_T3_5 = 35000000/baud;
+	_hwStream = &device;
 }
-
-void ModbusK3X::begin(){
+void ModbusK3X::begin(int baud){
 	if (_RS485Pin != 9999){
 		_RS485mode = true;
 		pinMode(_RS485Pin, OUTPUT);
@@ -36,7 +31,15 @@ void ModbusK3X::begin(){
 	else {
 		_RS485mode = false;
 	}
-	
+
+	_T1_5 = 15000000/baud; 
+	_T3_5 = 35000000/baud;
+
+  if (_hwStream)
+  {
+    _hwStream->begin(baud);
+    _stream =  _hwStream;
+  }
 }
 
 void ModbusK3X::modbusCRC(byte *modbusMessage, int len){
@@ -77,53 +80,55 @@ void ModbusK3X::sendModbusMessage(byte *modbusMessage, int len){
 		digitalWrite(_RS485Pin, HIGH);
 	}
 	modbusCRC(modbusMessage, len);
-	int nbrSent = _SerialBus.write(modbusMessage, len+2); // Len+2 as we added 2 bytes of CRC
-	_SerialBus.flush();
+	int nbrSent = _stream->write(modbusMessage, len+2); // Len+2 as we added 2 bytes of CRC
+	_stream->flush();
 	delayMicroseconds(_T3_5);
 	if (_RS485mode){
 		digitalWrite(_RS485Pin, LOW);
 	}
-
-
 }
 
 int ModbusK3X::receiveMessage(){
-    unsigned char buffer = 0;
+    _nbrRcv = 0;
     unsigned char overflowFlag = 0;
-    while (_SerialBus.available()) {
+    while (_stream->available()) {
         // The maximum number of bytes is limited to the serial buffer size of 128 bytes
         // If more bytes is received than the BUFFER_SIZE the overflow flag will be set and the
         // serial buffer will be red untill all the data is cleared from the receive buffer,
         // while the slave is still responding.
         if (overflowFlag)
-            _SerialBus.read();
+            _stream->read();
         else {
-            if (buffer == BUFFER_SIZE)
+            if (_nbrRcv == BUFFER_SIZE)
                 overflowFlag = 1;
 
-            _rcvBuffer[buffer] = _SerialBus.read();
-            buffer++;
+            _rcvBuffer[_nbrRcv] = _stream->read();
+            _nbrRcv++;
         }
-        int T1_5 = 15000000/9600; 
-        delayMicroseconds(T1_5); // inter character time out
+        delayMicroseconds(_T1_5); // inter character time out
     }
-  if (buffer == 0){
-    return 0;
+  if (_nbrRcv == 0){
+    return -1;
   }
   else {
-    uint16_t crc_received = (_rcvBuffer[buffer-2] << 8) + _rcvBuffer[buffer-1];  
-    modbusCRC(_rcvBuffer, buffer-2); //function modify the buffer to add the crc
-    uint16_t crc_calculated = (_rcvBuffer[buffer-2] << 8) + _rcvBuffer[buffer-1]; 
+    uint16_t crc_received = (_rcvBuffer[_nbrRcv-2] << 8) + _rcvBuffer[_nbrRcv-1];
+    modbusCRC(_rcvBuffer, _nbrRcv-2); //function modify the buffer to add the crc
+    uint16_t crc_calculated = (_rcvBuffer[_nbrRcv-2] << 8) + _rcvBuffer[_nbrRcv-1]; 
     if (crc_received == crc_calculated){  
-      return buffer;
+      return _nbrRcv;
     }
     else {
-      return 0;
+      return -2;
     }
   }
 }
 
-bool ModbusK3X::startSingleMeasurement(){
+int ModbusK3X::getRawOutput(byte *outputBuffer){
+	memcpy(outputBuffer, _rcvBuffer, _nbrRcv);
+	return _nbrRcv;
+}
+
+uint8_t ModbusK3X::startSingleMeasurement(){
 
 	/*
 
@@ -135,20 +140,21 @@ bool ModbusK3X::startSingleMeasurement(){
 	sendModbusMessage(modbusPacket1, 6);
 	delay(30);
 	if (receiveMessage() == 0){
-		return false;
+		return 1;
 	}
+	delay(2000);
 	byte modbusPacket2[7] = {_address, 0x44, 0x00, 0x1D, 0x01};
 	sendModbusMessage(modbusPacket2, 5);
 	delay(30);
-	int _nbrRcv = receiveMessage();
+	receiveMessage();
 	if (_nbrRcv != 6){
-		return false;
+		return 2;
 	}
 	if ((_rcvBuffer[3] & 0x20)  == 0x20){///We check that the bit number 5 (0x20 = 00010000) is set to 1
-		return true;
+		return 0; //All good
 	} 
 	else {
-		return false;
+		return 3;
 	}
 }
 
@@ -169,7 +175,7 @@ bool ModbusK3X::startContinuousMeasurement(){
 	byte modbusPacket2[7] = {_address, 0x44, 0x00, 0x1D, 0x01};
 	sendModbusMessage(modbusPacket2, 5);
 	delay(30);
-	int _nbrRcv = receiveMessage();
+	receiveMessage();
 	if (_nbrRcv != 6){
 		return false;
 	}
@@ -198,7 +204,7 @@ bool ModbusK3X::stopContinuousMeasurement(){
 	byte modbusPacket2[7] = {_address, 0x44, 0x00, 0x1D, 0x01};
 	sendModbusMessage(modbusPacket2, 5);
 	delay(30);
-	int _nbrRcv = receiveMessage();
+	receiveMessage();
 	if (_nbrRcv != 6){
 		return false;
 	}
@@ -212,37 +218,40 @@ bool ModbusK3X::stopContinuousMeasurement(){
 
 
 uint16_t ModbusK3X::retrieveCO2Value(){
-	byte modbusPacket[7] = {_address, 0x44, 0x0, 0x08, 0x02};
+	byte modbusPacket[7] = {_address, 0x44, 0x00, 0x08, 0x02};
 	sendModbusMessage(modbusPacket, 5);
-	delay(30);
-	if (receiveMessage() != 7){
+	delay(10);
+	int nbr = receiveMessage();
+	if (nbr != 7){
 		return 0;
 	}
-	return  (uint16_t) ((_rcvBuffer[3] >> 8) +_rcvBuffer[4]);
+	return  (uint16_t) ((_rcvBuffer[3] << 8) +_rcvBuffer[4]);
 }
 
 uint16_t ModbusK3X::retrieveTemperatureValue(){
-	byte modbusPacket[7] = {_address, 0x44, 0x0, 0x12, 0x02};
+	byte modbusPacket[7] = {_address, 0x44, 0x00, 0x12, 0x02};
 	sendModbusMessage(modbusPacket, 5);
 	delay(30);
-	if (receiveMessage() != 7){
-		return 0;
+	int nbr = receiveMessage();
+	if (nbr != 7){
+		return nbr;
 	}
-	return  (uint16_t) ((_rcvBuffer[3] >> 8) +_rcvBuffer[4]);
+	return  (uint16_t) ((_rcvBuffer[3] << 8) +_rcvBuffer[4]);
 }
 
 uint16_t ModbusK3X::retrieveHumidityValue(){
-	byte modbusPacket[7] = {_address, 0x44, 0x0, 0x14, 0x02};
+	byte modbusPacket[7] = {_address, 0x44, 0x00, 0x14, 0x02};
 	sendModbusMessage(modbusPacket, 5);
 	delay(30);
-	if (receiveMessage() != 7){
-		return 0;
+	int nbr = receiveMessage();
+	if (nbr != 7){
+		return nbr;
 	}
-	return  (uint16_t) ((_rcvBuffer[3] >> 8) +_rcvBuffer[4]);
+	return  (uint16_t) ((_rcvBuffer[3] << 8) +_rcvBuffer[4]);
 }
 
 bool ModbusK3X::startZeroCalibration(){
-	byte modbusPacket1[9] = {_address, 0x41, 0x0, 0x42, 0x02, 0x7C, 0x07};
+	byte modbusPacket1[9] = {_address, 0x41, 0x00, 0x42, 0x02, 0x7C, 0x07};
 	sendModbusMessage(modbusPacket1, 9);
 	delay(30);
 	if (receiveMessage() == 0){
@@ -252,7 +261,7 @@ bool ModbusK3X::startZeroCalibration(){
 	byte modbusPacket2[7] = {_address, 0x44, 0x00, 0x40, 0x01};
 	sendModbusMessage(modbusPacket2, 5);
 	delay(30);
-	int _nbrRcv = receiveMessage();
+	receiveMessage();
 	if (_nbrRcv != 6){
 		return false;
 	}
@@ -275,7 +284,7 @@ bool ModbusK3X::startBackgroundCalibration(){
 	byte modbusPacket2[7] = {_address, 0x44, 0x00, 0x40, 0x01};
 	sendModbusMessage(modbusPacket2, 5);
 	delay(30);
-	int _nbrRcv = receiveMessage();
+	receiveMessage();
 	if (_nbrRcv != 6){
 		return false;
 	}
