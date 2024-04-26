@@ -13,6 +13,7 @@ This library aims to provide an easy way to communicate with Senseair sensors K3
 This library was tested on the following platforms :
 * Industruino D21G
 
+
 # Usage
 First, clone this repository and put it in a folder inside your libraries folder.
 
@@ -46,7 +47,31 @@ void loop(){
 }
 ```
 
+#Available functions :
+```C++
+sendModbusMessage();
+receiveMessage();
+getRawOutput();
+startSingleMeasurement();
+startContinuousMeasurement();
+stopContinuousMeasurement();
+retrieveCO2Value();
+retrieveTemperatureValue();
+retrieveHumidityValue();
+startZeroCalibration();
+startBackgroundCalibration();
+```
+
 Retrieve temperature value :
 ```C++
   int temperature_value = retrieveTemperatureValue(); 
 ```
+
+Retrieve relative humidity value :
+```C++
+  float RH = ((float) retrieveHumidityValue()/100);
+  //Temperature and relative humidity are stored as 4 digits values in an int.
+  //Therefore you should convert to fload and divide by 100 : 2333 -> 23.33
+  
+```
+
