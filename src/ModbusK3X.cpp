@@ -82,6 +82,13 @@ void ModbusK3X::sendModbusMessage(byte *modbusMessage, int len){
 	modbusCRC(modbusMessage, len);
 	int nbrSent = _stream->write(modbusMessage, len+2); // Len+2 as we added 2 bytes of CRC
 	_stream->flush();
+	/*SerialUSB.println("Message sent : ");
+	for (int j = 0; j < nbrSent; j++){
+		SerialUSB.print("0x");
+		SerialUSB.print(modbusMessage[j], HEX);
+		SerialUSB.print(" ");
+	}
+	SerialUSB.println(" "); */
 	delayMicroseconds(_T3_5);
 	if (_RS485mode){
 		digitalWrite(_RS485Pin, LOW);
@@ -108,24 +115,37 @@ int ModbusK3X::receiveMessage(){
         delayMicroseconds(_T1_5); // inter character time out
     }
   if (_nbrRcv == 0){
-    return -1;
+  	_errorCode = 1;
+    return 0;
   }
   else {
     uint16_t crc_received = (_rcvBuffer[_nbrRcv-2] << 8) + _rcvBuffer[_nbrRcv-1];
     modbusCRC(_rcvBuffer, _nbrRcv-2); //function modify the buffer to add the crc
     uint16_t crc_calculated = (_rcvBuffer[_nbrRcv-2] << 8) + _rcvBuffer[_nbrRcv-1]; 
     if (crc_received == crc_calculated){  
+    	_errorCode = 0;
       return _nbrRcv;
     }
     else {
-      return -2;
+    	if (overflowFlag){
+    		_errorCode = 3;
+    	}
+    	else {
+    		_errorCode = 2;
+    	}
+      return 0;
     }
   }
 }
 
 int ModbusK3X::getRawOutput(byte *outputBuffer){
 	memcpy(outputBuffer, _rcvBuffer, _nbrRcv);
+	_errorCode = 0;
 	return _nbrRcv;
+}
+
+byte ModbusK3X::getErrorCode(){
+	return _errorCode;
 }
 
 uint8_t ModbusK3X::startSingleMeasurement(){
@@ -153,8 +173,11 @@ uint8_t ModbusK3X::startSingleMeasurement(){
 	if ((_rcvBuffer[3] & 0x20)  == 0x20){///We check that the bit number 5 (0x20 = 00010000) is set to 1
 		return 0; //All good
 	} 
-	else {
+	else if ((_rcvBuffer[3] & 0x40)  == 0x40){
 		return 3;
+	}
+	else {
+		return 4;
 	}
 }
 
@@ -248,6 +271,56 @@ uint16_t ModbusK3X::retrieveHumidityValue(){
 		return nbr;
 	}
 	return  (uint16_t) ((_rcvBuffer[3] << 8) +_rcvBuffer[4]);
+}
+
+int ModbusK3X::readMultipleRegisters(int function_code, uint16_t register_start_address, uint16_t nbr_registers, uint16_t* data_array){
+	byte modbusPacket[8] = {_address, function_code, register_start_address>>8, register_start_address&0x00FF,nbr_registers>>8, nbr_registers&0x00FF};
+	sendModbusMessage(modbusPacket, 6);
+	delay(30);
+	int nbr = receiveMessage();
+	if (nbr != (5 + 2*nbr_registers)){
+		return 0;
+	}
+	memcpy(data_array, _rcvBuffer+3, nbr_registers*2);
+	for (int i = 0; i< nbr_registers; i++){
+		//byte msb = (byte) (data_array[i]>>8);
+		//byte lsb = (byte) (data_array[i]&0x00FF);
+		//data_array[i] = ((uint16_t)lsb)<<8 + msb;
+		//data_array[i] = (data_array[i] >> 8) + (data_array[i]&0x00FF) << 8;
+		data_array[i] = ((data_array[i] & 0xff) << 8) | ((data_array[i] & 0xff00) >> 8);  
+	}
+	return (nbr-5)/2;
+
+}
+
+int ModbusK3X::writeMultipleRegisters(uint16_t register_start_address, uint16_t nbr_registers,  uint16_t* data_array){
+	byte modbusPacket[30] = {_address, 0x10, register_start_address>>8, register_start_address&0x00FF,nbr_registers>>8, nbr_registers&0x00FF, (byte) (nbr_registers*2)};
+	for (int i = 0; i < nbr_registers; i++){
+		modbusPacket[7+(2*i)] = (data_array[i] >> 8);
+		modbusPacket[7+(2*i)+1] = (data_array[i] & 0x00ff) ;
+	}
+
+	sendModbusMessage(modbusPacket, 7+nbr_registers*2);
+	delay(30);
+	int nbr = receiveMessage();
+	if (nbr != 8){
+		return 0;
+	}
+	else {
+		bool flag_check_bytes = false;
+		for (int i = 0; i<6; i++){
+			if (_rcvBuffer[i] != modbusPacket[i]){
+				flag_check_bytes = true;
+			}
+		}
+		if (flag_check_bytes){
+			return 0;
+		}
+		else {
+			return nbr_registers;
+		}
+	}
+	
 }
 
 bool ModbusK3X::startZeroCalibration(){

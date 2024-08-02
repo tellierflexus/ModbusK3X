@@ -27,12 +27,15 @@ public:
   void sendModbusMessage(byte *modbusMessage, int len);
   int receiveMessage();
   int getRawOutput(byte *outputBuffer);
+  byte getErrorCode();
   uint8_t startSingleMeasurement();
   bool startContinuousMeasurement();
   bool stopContinuousMeasurement();
   uint16_t retrieveCO2Value();
   uint16_t retrieveTemperatureValue();
   uint16_t retrieveHumidityValue();
+  int readMultipleRegisters(int function_code, uint16_t register_start_address, uint16_t nbr_registers, uint16_t* data_array);
+  int writeMultipleRegisters(uint16_t register_start_address, uint16_t nbr_registers,  uint16_t* data_array);
   bool startZeroCalibration();
   bool startBackgroundCalibration();
 
@@ -45,6 +48,7 @@ private:
   HardwareSerial* _hwStream;
   //SoftwareSerial* _swStream;
   Stream* _stream;
+  byte _errorCode;
 };
 
 #endif
